@@ -1,0 +1,8 @@
+{
+  "C_Cpp.errorSquiggles": "enabled",
+  "files.associations": {
+    "time.h": "c",
+    "types.h": "c",
+    "netdb.h": "c"
+  }
+}
