@@ -17,7 +17,7 @@
 #include <time.h>
 
 
-#define MAX_BYTES 4096  
+#define MAX_BYTES 8192 
 #define TIMEOUT_SECONDS 30
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX_SIZE 200*(1<<20)  
@@ -129,7 +129,7 @@ LRUCache* lruCacheCreate(int capacity) {
 
     cache->capacity = capacity;
     cache->size = 0;
-    cache->hashSize = 1009;  // Choose a prime number for hash size
+    cache->hashSize = 1009;
     cache->map = (cache_element**)calloc(cache->hashSize, sizeof(cache_element*));
 
     if (!cache->map) {
@@ -260,7 +260,7 @@ int checkHTTPversion(char *msg){
 	}
 	else if(strncmp(msg, "HTTP/1.0", 8) == 0)			
 	{
-		version = 1;										// Handling this similar to version 1.1
+		version = 1;								
 	}
 	else
 		version = -1;
@@ -268,29 +268,76 @@ int checkHTTPversion(char *msg){
 	return version;
 }
 
+int connectRemoteServer(char *host, int port) {
+    struct hostent *server;
+    struct sockaddr_in serverAddr;
+    int sockfd;
+
+    // Get host by name
+    if ((server = gethostbyname(host)) == NULL) {
+        fprintf(stderr, "Error resolving hostname %s\n", host);
+        return -1;
+    }
+
+    // Create socket
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("Failed to create socket");
+        return -1;
+    }
+
+    // Configure server address
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    memcpy(&serverAddr.sin_addr.s_addr, server->h_addr, server->h_length);
+    serverAddr.sin_port = htons(port);
+
+    // Connect to remote server
+    if (connect(sockfd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("Failed to connect to remote server");
+        close(sockfd);
+        return -1;
+    }
+
+    return sockfd;
+}
+
+
+
 int handle_request(int clientSocket, struct ParsedRequest *request, char *tempReq) {
     if (!request || !tempReq) {
+        fprintf(stderr, "Invalid request parameters\n");
         return -1;
     }
 
+    // Allocate buffers
     char *buf = (char *)calloc(MAX_BYTES, sizeof(char));
-    if (!buf) {
-        perror("Failed to allocate buffer");
+    char *response_buffer = (char *)calloc(MAX_BYTES, sizeof(char));
+    if (!buf || !response_buffer) {
+        perror("Failed to allocate buffers");
+        free(buf);
+        free(response_buffer);
         return -1;
     }
+
+    // Build full path including query string
+    char full_path[MAX_BYTES];
+    snprintf(full_path, MAX_BYTES, "%s", 
+         request->path ? request->path : "/");
 
     // Build initial request line
-    if (snprintf(buf, MAX_BYTES, "GET %s %s\r\n",
-                 request->path ? request->path : "/",
-                 request->version ? request->version : "HTTP/1.0") >= MAX_BYTES) {
+    if (snprintf(buf, MAX_BYTES, "GET %s HTTP/1.1\r\n", full_path) >= MAX_BYTES) {
+        fprintf(stderr, "Request too long\n");
         free(buf);
-        return -1;  // Request too long
+        free(response_buffer);
+        return -1;
     }
 
     // Set required headers
     if (ParsedHeader_set(request, "Connection", "close") < 0 ||
-        (ParsedHeader_get(request, "Host") == NULL &&
-         ParsedHeader_set(request, "Host", request->host) < 0)) {
+        ParsedHeader_set(request, "Host", request->host) < 0 ||
+        ParsedHeader_set(request, "User-Agent", "Mozilla/5.0 (Compatible)") < 0 ||
+        ParsedHeader_set(request, "Accept", "*/*") < 0 ||
+        ParsedHeader_set(request, "Accept-Encoding", "identity") < 0) {
         fprintf(stderr, "Failed to set required headers\n");
         // Continue anyway - headers might still be valid
     }
@@ -302,11 +349,26 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *tempRe
         // Continue with partial headers
     }
 
+    // Add final CRLF
+    strcat(buf, "\r\n");
+
+    // Determine port (default 80, or 443 for HTTPS)
+    int server_port = 80;
+    if (request->port) {
+        server_port = atoi(request->port);
+    } else if (strstr(request->host, "https") != NULL) {
+        server_port = 443;
+    }
+
+    // Debug output
+    printf("DEBUG - Connecting to %s:%d\n", request->host, server_port);
+    printf("DEBUG - Full request:\n%s\n", buf);
+
     // Connect to remote server
-    int server_port = request->port ? atoi(request->port) : 80;
     int remoteSocketID = connectRemoteServer(request->host, server_port);
     if (remoteSocketID < 0) {
         free(buf);
+        free(response_buffer);
         return -1;
     }
 
@@ -315,26 +377,42 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *tempRe
     if (bytes_sent < 0) {
         perror("Failed to send request to remote server");
         free(buf);
+        free(response_buffer);
         close(remoteSocketID);
         return -1;
     }
 
-    // Prepare buffer for response
-    bzero(buf, MAX_BYTES);
-    char *temp_buffer = (char *)calloc(MAX_BYTES, sizeof(char));
-    if (!temp_buffer) {
-        perror("Failed to allocate temp buffer");
-        free(buf);
-        close(remoteSocketID);
-        return -1;
-    }
-
-    size_t temp_buffer_size = MAX_BYTES;
-    size_t temp_buffer_index = 0;
-    ssize_t bytes_received;
+    // Prepare for response
+    size_t total_received = 0;
+    int status_code = 0;
+    bool headers_received = false;
 
     // Receive and forward response
-    while ((bytes_received = recv(remoteSocketID, buf, MAX_BYTES - 1, 0)) > 0) {
+    while (1) {
+        ssize_t bytes_received = recv(remoteSocketID, buf, MAX_BYTES - 1, 0);
+        
+        if (bytes_received <= 0) {
+            break;  // Connection closed or error
+        }
+
+        // Check status code on first chunk
+        if (!headers_received) {
+            buf[bytes_received] = '\0';
+            sscanf(buf, "%*s %d", &status_code);
+            printf("DEBUG - Response status: %d\n", status_code);
+            
+            // Handle redirects (300-399)
+            if (status_code >= 300 && status_code < 400) {
+                // Extract Location header
+                char *location = strstr(buf, "Location: ");
+                if (location) {
+                    printf("DEBUG - Redirect detected to: %s\n", location);
+                    // Here you could implement redirect handling
+                }
+            }
+            headers_received = true;
+        }
+
         // Forward to client
         char *send_ptr = buf;
         size_t remaining = bytes_received;
@@ -343,8 +421,8 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *tempRe
             bytes_sent = send(clientSocket, send_ptr, remaining, 0);
             if (bytes_sent < 0) {
                 perror("Failed to send to client");
-                free(temp_buffer);
                 free(buf);
+                free(response_buffer);
                 close(remoteSocketID);
                 return -1;
             }
@@ -352,79 +430,29 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *tempRe
             send_ptr += bytes_sent;
         }
 
-        // Store in temp buffer for caching
-        if (temp_buffer_index + bytes_received >= temp_buffer_size) {
-            size_t new_size = temp_buffer_size * 2;
-            char *new_buf = (char *)realloc(temp_buffer, new_size);
-            if (!new_buf) {
-                perror("Failed to expand temp buffer");
-                free(temp_buffer);
-                free(buf);
-                close(remoteSocketID);
-                return -1;
-            }
-            temp_buffer = new_buf;
-            temp_buffer_size = new_size;
+        // Store in response buffer for caching
+        if (total_received + bytes_received < MAX_BYTES) {
+            memcpy(response_buffer + total_received, buf, bytes_received);
+            total_received += bytes_received;
         }
 
-        memcpy(temp_buffer + temp_buffer_index, buf, bytes_received);
-        temp_buffer_index += bytes_received;
         bzero(buf, MAX_BYTES);
     }
 
-    if (bytes_received < 0) {
-        perror("Error receiving from remote server");
-        free(temp_buffer);
-        free(buf);
-        close(remoteSocketID);
-        return -1;
+    // Add response to cache
+    if (total_received > 0) {
+        response_buffer[total_received] = '\0';
+        add_cache_element(response_buffer, total_received, tempReq);
     }
-
-    // Add null terminator and cache response
-    temp_buffer[temp_buffer_index] = '\0';
-    add_cache_element(temp_buffer, temp_buffer_index, tempReq);
 
     printf("Request handled successfully\n");
 
-    // Cleanup resources
-    free(temp_buffer);
+    // Cleanup
+    free(response_buffer);
     free(buf);
     close(remoteSocketID);
 
     return 0;
-}
-
-int connectRemoteServer(char* host_addr, int port_num) {
-    int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (remoteSocket < 0) {
-        perror("Error in Creating Socket.");
-        return -1;
-    }
-
-    struct addrinfo hints, *res;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    if (getaddrinfo(host_addr, NULL, &hints, &res) != 0) {
-        perror("Error in DNS resolution");
-        close(remoteSocket);
-        return -1;
-    }
-
-    struct sockaddr_in* server_addr = (struct sockaddr_in*)res->ai_addr;
-    server_addr->sin_port = htons(port_num);
-
-    if (connect(remoteSocket, (struct sockaddr*)server_addr, sizeof(*server_addr)) < 0) {
-        perror("Error in connecting to remote server");
-        close(remoteSocket);
-        freeaddrinfo(res);
-        return -1;
-    }
-
-    freeaddrinfo(res); // Free memory after use
-    return remoteSocket;
 }
 
 void* thread_fn(void* clientSocket) {
@@ -445,7 +473,7 @@ void* thread_fn(void* clientSocket) {
     // Setup timeout
     struct timeval timeout = { .tv_sec = TIMEOUT_SECONDS, .tv_usec = 0 };
 
-    // Wait for semaphore
+    // Wait for semaphore to update
     if (sem_wait(&semaphore) != 0) {
         perror("Semaphore wait failed");
         return (void*)(intptr_t)-1;
@@ -519,7 +547,7 @@ void* thread_fn(void* clientSocket) {
 
     // Check cache
     struct cache_element* cached_response = find(tempReq);
-    //printf("cache value %s\n", cached_response->data);
+    
     if (cached_response) {
         result = send_cached_response(socket, cached_response);
         if (result < 0) {
@@ -590,22 +618,19 @@ char* normalize_url(char* request) {
         return NULL;
     }
     
-    // Skip "GET /" if present
     char* start = request;
     if (strncmp(request, "GET /", 5) == 0) {
         start += 5;
     }
     
-    // Find the actual URL
     char* url_start = strstr(start, "https://");
     if (!url_start) {
         url_start = strstr(start, "http://");
     }
     if (!url_start) {
-        return strdup(start);  // Make a copy of the normalized URL
+        return strdup(start); 
     }
     
-    // Find end of URL (first space after URL)
     char* end = strchr(url_start, ' ');
     if (end) {
         char* normalized = (char*)malloc(end - url_start + 1);
@@ -642,7 +667,6 @@ int send_cached_response(int clientSocket, cache_element* cached_response) {
         total_bytes_sent += bytes_sent;
     }
 
-    // Log that the cached response was sent
     printf("Cached response sent: URL: %s, Bytes Sent: %ld\n", cached_response->url, total_bytes_sent);
 
     return 0; // Success
@@ -754,7 +778,7 @@ int add_cache_element(char* data, int size, char* url) {
 
 void freeCache(LRUCache *cache) {
     if (cache == NULL) {
-        return;  // If the cache is already NULL, do nothing
+        return; 
     }
 
     cache_element *current = cache->head;
@@ -769,7 +793,6 @@ void freeCache(LRUCache *cache) {
         current = next;  // Move to the next element
     }
 
-    // Free the cache itself
     free(cache);
 }
 
