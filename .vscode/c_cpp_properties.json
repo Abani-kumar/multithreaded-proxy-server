@@ -1,49 +1,46 @@
 {
-    "configurations": [
-        {
-            "name": "Cygwin",  // Change name to match Cygwin
-            "includePath": [
-                "C:/cygwin64/usr/include",
-                "C:/cygwin64/usr/include/c++/7",
-                "C:/cygwin64/usr/include/c++/7/x86_64-pc-cygwin",
-                "${workspaceFolder}/**"
-            ],
-            "defines": [
-                "_DEBUG",
-                "UNICODE",
-                "_UNICODE"
-            ],
-            "compilerPath": "C:/cygwin64/bin/gcc.exe",  // Point to Cygwin's GCC
-            "cStandard": "c11",
-            "cppStandard": "gnu++17",
-            "intelliSenseMode": "gcc-x64",  // Updated to match Cygwin GCC
-            "compilerPathInCppPropertiesJson": "C:/cygwin64/bin/gcc.exe",  // Point to Cygwin's GCC
-            "mergeConfigurations": false,
-            "browse": {
-                "path": [
-                    "C:/cygwin64/usr/include",
-                    "C:/cygwin64/usr/include/c++/7",
-                    "C:/cygwin64/usr/include/c++/7/x86_64-pc-cygwin",
-                    "${workspaceFolder}"
-                ],
-                "limitSymbolsToIncludedHeaders": true
-            }
-        },
-        {
-            "name": "MinGW",  // You can keep this configuration for MinGW if you need it
-            "includePath": [
-                "${workspaceFolder}/**"
-            ],
-            "defines": [
-                "_DEBUG",
-                "UNICODE",
-                "_UNICODE"
-            ],
-            "compilerPath": "C:/MinGW/bin/gcc.exe",
-            "cStandard": "c11",
-            "cppStandard": "gnu++14",
-            "intelliSenseMode": "windows-gcc-x86"
-        }
-    ],
-    "version": 4
+  "configurations": [
+    {
+      "name": "windows-cygwin-gcc-x64",
+      "includePath": [
+        "${workspaceFolder}/**"
+      ],
+      "defines": [
+        "_DEBUG",
+        "UNICODE",
+        "_UNICODE"
+      ],
+      "compilerPath": "C:/cygwin64/bin/gcc.exe",
+      "cStandard": "${default}",
+      "cppStandard": "${default}",
+      "intelliSenseMode": "linux-gcc-x64",
+      "compilerPathInCppPropertiesJson": "C:/cygwin64/bin/gcc.exe",
+      "mergeConfigurations": false,
+      "browse": {
+        "path": [
+          "C:/cygwin64/usr/include",
+          "C:/cygwin64/usr/include/c++/7",
+          "C:/cygwin64/usr/include/c++/7/x86_64-pc-cygwin",
+          "${workspaceFolder}"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    },
+    {
+      "name": "MinGW",
+      "includePath": [
+        "${workspaceFolder}/**"
+      ],
+      "defines": [
+        "_DEBUG",
+        "UNICODE",
+        "_UNICODE"
+      ],
+      "compilerPath": "C:/MinGW/bin/gcc.exe",
+      "cStandard": "c11",
+      "cppStandard": "gnu++14",
+      "intelliSenseMode": "windows-gcc-x86"
+    }
+  ],
+  "version": 4
 }
